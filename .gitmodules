@@ -1,0 +1,9 @@
+[submodule "NPAModels"]
+	path = NPAModels
+	url = https://github.com/philipmorrisintl/NPAModels
+[submodule "NPA"]
+	path = NPA
+	url = https://github.com/MahShaaban/NPA
+[submodule "manuscript"]
+	path = manuscript
+	url = https://git.overleaf.com/60c976dfb08a5e46fd673744

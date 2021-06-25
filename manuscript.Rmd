@@ -1,0 +1,483 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load_libraries}
+# load libraries
+library(tidyverse)
+library(reshape2)
+library(NPA)
+library(NPAModels)
+library(igraph)
+library(tidygraph)
+library(ggraph)
+library(ComplexHeatmap)
+library(SummarizedExperiment)
+library(cowplot)
+library(GGally)
+```
+
+```{r load_model}
+# load metastasis scores
+net.metastasis <- load_model('Hs', 'CFA', 'Metastasis')
+net.metastasis <- net.metastasis$get_data()
+```
+
+```{r verify_knockdown}
+# tf deg
+knocktf <- read_tsv('data/knock_tf_subset.tsv')
+tf_list <- unique(knocktf$TF)
+
+# msg_deg
+knockmsg <- read_rds('data/diff_expr_groups.rds')
+msg_list <- read_lines('data/msg_list.txt')
+
+# combine
+diff_expr <- bind_rows(
+    list(
+    TF = select(knocktf, KD = TF, ID = Gene, FC = Log2FC, PVAL = P_value),
+    MSG = select(knockmsg, KD = group, ID, FC = logFC, PVAL = P.Value)
+),
+.id = 'Type')
+```
+
+```{r fc_heatmap}
+mat <- diff_expr %>%
+    filter(!KD %in% c('POLR3A', 'KISS1')) %>%
+    filter(!ID %in% c('POLR3A', 'KISS1')) %>%
+    filter(ID %in% unique(c(tf_list, msg_list))) %>%
+    group_by(Type, KD, ID) %>%
+    top_n(n=1, abs(FC)) %>%
+    ungroup() %>%
+    acast(ID ~ KD, value.var = 'FC')
+
+groups <- list(TF = tf_list, MSG = msg_list) %>%
+    melt() %>%
+    setNames(c('gene', 'type'))
+
+target_knockdown <- melt(mat) %>%
+  mutate_at(vars(starts_with('Var')), as.character) %>%
+  filter(Var1 == Var2)
+
+all(rownames(mat) == target_knockdown$Var1)
+ra <- rowAnnotation(FC = anno_barplot(target_knockdown$value,
+                    gp = gpar(col = 'white', fill = 'darkgray')),
+                    width = unit(2, "cm"))
+ta <- columnAnnotation(FC = anno_boxplot(mat,
+                                         size = unit(.5, 'mm'),
+                                         pch = 19,
+                                         gp = gpar(fill = 'darkgray')),
+                       height = unit(2, "cm"))
+
+png(filename = 'output/manuscript/figures/knockdown_matrix.png',
+    height = 7, width = 7, units = 'in', res = 300)
+Heatmap(mat,
+        row_split = groups$type[match(rownames(mat), groups$gene)],
+        column_split = groups$type[match(colnames(mat), groups$gene)],
+        name = 'FC',
+        left_annotation = ra,
+        top_annotation = ta,
+        show_column_dend = FALSE,
+        show_row_dend = FALSE) 
+dev.off()
+```
+
+```{r fold_change}
+df <- diff_expr %>%
+  filter(!KD %in% c('POLR3A', 'KISS1')) %>%
+    filter(!ID %in% c('POLR3A', 'KISS1')) %>%
+    filter(ID %in% unique(diff_expr$KD)) %>%
+    mutate(target = ifelse(KD == ID, 'Self', 'Other'))
+(ggplot() +
+  facet_grid(target~Type, scales = 'free', space = 'free') +
+  geom_col(data = filter(df, target == 'Self'),
+           aes(x = KD, y = FC)) +
+  geom_boxplot(data = filter(df, target == 'Other'),
+               aes(x = KD, y = FC)) +
+  labs(x = '', y = 'Fold-change (log_2)') +
+  theme(panel.grid = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5),
+        strip.background = element_blank())) %>%
+  ggsave(plot = .,
+         filename = 'output/manuscript/figures/fold_change.png',
+         height = 5, width = 6)
+```
+
+```{r network}
+g <- net.metastasis$g %>%
+  as_tbl_graph() %>%
+  mutate(type = ifelse(name %in% tf_list, 'TF', 'MSG'))
+
+# the network graph
+net <- g %>%
+  ggraph() +
+  geom_edge_link(aes(color = as.factor(weight)),
+                 end_cap = circle(5, 'mm'),
+                 start_cap = circle(5, 'mm'),
+                 alpha = .5,
+                 arrow = arrow(length = unit(2, 'mm'))) +
+  geom_node_text(aes(label = name, color = type)) +
+  theme_void() +
+  theme(legend.position = 'none')
+
+# the degree distribution
+p1  <- g %>%
+  mutate(degree = centrality_degree()) %>%
+  pull(degree) %>%
+  table() %>%
+  melt() %>%
+  setNames(c('k', 'f(k)')) %>%
+  ggplot(aes(x = k, y = `f(k)`)) +
+  geom_point() +
+  labs(y = 'Fraction',
+       x = 'Edges (Degree)') +
+  theme(panel.grid = element_blank())
+
+p2 <- g %>%
+  mutate(degree = centrality_closeness()) %>%
+  pull(degree) %>%
+  melt() %>%
+  ggplot(aes(x = value)) +
+  geom_density() +
+  labs(y = 'Density',
+       x = 'Closeness') +
+  theme(panel.grid = element_blank())
+
+p3 <- net.metastasis$startNodeDown %>%
+  map_int(~nrow(.x)) %>%
+  melt() %>%
+  ggplot(aes(x = log2(value))) +
+  geom_density() +
+  labs(x = 'Terminal Nodes (Log_2)',
+       y = 'Density') +
+  theme(panel.grid = element_blank())
+
+p4 <- net.metastasis$startNodeDown %>%
+  bind_rows(.id = 'source') %>%
+  as_tibble() %>%
+  mutate(dir = ifelse(Direction == 1, 'Up', 'Down')) %>%
+  group_by(source, dir) %>%
+  summarise(n = n()) %>%
+  ungroup() %>%
+  ggplot(aes(x = log2(n), fill = dir)) +
+  geom_histogram(alpha = .7) +
+  labs(x = 'Terminal Nodes (Log_2)',
+       y = 'Count',
+       fill = 'Direction') +
+  theme(legend.position = c(.7, .7),
+        legend.background = element_blank(),
+        panel.grid = element_blank())
+
+# the figure
+plot_grid(net,
+          plot_grid(p1, p2, p3, p4,
+                    nrow = 2, scale = .9),
+          nrow = 1,
+          labels = 'AUTO',
+          label_fontface = 'plain') %>%
+  ggsave(plot = .,
+         filename = 'output/manuscript/figures/networks.png',
+         width = 10, height = 5)
+```
+
+```{r npa}
+npa_metastasis <- read_rds('data/npa_metastasis.rds')
+npa <- cbind(coeff = coefficients(npa_metastasis),
+      conf.int(npa_metastasis)) %>%
+    as.data.frame() %>%
+    rownames_to_column('drug') %>%
+  as_tibble()
+
+(npa %>%
+    mutate(drug = fct_reorder(drug, coeff)) %>%
+    top_n(5, coeff) %>%
+    ggplot(aes(x = drug, y = coeff, ymin = down, ymax = up)) +
+    geom_col(width = .8) +
+    geom_errorbar(width = .2) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust =.2),
+          panel.grid = element_blank()) +
+    labs(x = '', y = 'NPA')) -> npa_plot
+    # ggsave(plot = .,
+    #        filename = 'output/manuscript/figures/npa.png',
+    #        width = 4, height = 4)
+```
+
+```{r nodes}
+df1 <- coefficients(npa_metastasis, type = 'nodes') %>% melt() %>%
+    setNames(c('node', 'drug', 'coeff'))
+df2 <- conf.int(npa_metastasis, type = 'nodes') %>%
+    melt() %>%
+    as_tibble() %>%
+    setNames(c('node', 'drug', 'value')) %>%
+    separate(drug, into = c('drug', 'dir'), sep = ' \\(|\\)') %>%
+    spread(dir, value)
+
+nodes <- (left_join(df1, df2) %>%
+    as_tibble() %>%
+    filter((coeff > 0  & down > 0) | (coeff < 0 & up < 0)) %>%
+    mutate(type = ifelse(node %in% tf_list, 'TF', 'MSG'),
+           dir = ifelse(coeff > 0, 'Up', 'Down')) %>%
+    ggplot(aes(x = drug, y = node, color = dir, size = abs(coeff))) +
+    geom_point() +
+    facet_grid(type~., scales = 'free_y', space = 'free_y') +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust =.2),
+          legend.position = 'none',
+          panel.grid = element_blank()) +
+    labs(x = '', y = '',
+         color = 'Dir', size = 'Coeff')) 
+
+nodes <- left_join(df1, df2) %>%
+    as_tibble() %>%
+    filter((coeff > 0  & down > 0) | (coeff < 0 & up < 0)) %>%
+    mutate(type = ifelse(node %in% tf_list, 'TF', 'MSG'),
+           dir = ifelse(coeff > 0, 'Up', 'Down')) %>%
+  ggplot(aes(x = node, y = coeff)) +
+  geom_point() +
+  geom_hline(yintercept = c(-.1, 0, .1), lty = 2, color = 'red') +
+  facet_grid(~type, scales = 'free_x', space = 'free_x') +
+  labs(x = '', y = 'Perturbation Coefficient') +
+  lims(y = c(-.1, .2)) +
+  theme(panel.grid = element_blank(), 
+        strip.background = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.title.x = element_text(size = 0)) 
+hms2 <- read_csv('data/dataset_20269_20210412114601.csv')
+
+grmax <- hms2 %>%
+  filter(`Cell Name` == 'MCF7') %>%
+  mutate(drug = tolower(`Small Molecule Name`),
+         grmax = GRmax) %>%
+  inner_join(npa) %>%
+  filter(grmax < 1) %>%
+  mutate(group = cut(grmax, breaks = c(1, 0, -1),
+                     labels = c('Cell death', 'Partial inhibition'))) %>%
+  ggplot(aes(x = drug, y = grmax)) +
+  geom_point() +
+  geom_hline(yintercept = 0, lty = 2, color = 'red') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .3),
+        panel.grid = element_blank(),
+        axis.title.x = element_text(size = 0)) +
+  labs(x= '', y = 'GRmax')
+
+plot_grid(grmax, nodes, 
+          labels = 'AUTO',
+          label_fontface = 'plain',
+          ncol = 1,
+          scale = .95) %>%
+    ggsave(plot = .,
+           filename = 'output/manuscript/figures/nodes.png',
+           height = 7, width = 7)
+```
+
+```{r drugs}
+diff_expr <- read_tsv('data/lincs_trt_cp_deg.tsv')
+compound_info <- read_tsv('data/compoundinfo_beta.txt')
+compound_info %>%
+  filter(cmap_name %in% unique(diff_expr$treatment)) %>%
+  select(cmap_name, moa, target) %>%
+  group_by(moa) %>%
+  summarise_all(function(x) paste(unique(x), collapse = ', ')) %>%
+  write_csv('output/manuscript/drugs.csv')
+```
+
+```{r concordance}
+concordance <- read_rds('data/true_labels.rds')
+
+concordance_drug <- concordance %>%
+    group_by(drug) %>%
+    summarise(kappa = (mean(con) - .5)/.5,
+              up = mean((upstream_coef)))
+
+ks_drug <- ks.test(concordance_drug$kappa,
+                   rnorm,
+                   alternative = 'greater')
+
+p1 <- concordance_drug %>%
+    ggplot(aes(x = kappa)) +
+    geom_histogram() +
+    geom_vline(xintercept = c(0, .5), lty = 2, color = 'red') +
+    labs(x = "Concordance (Cohen's k)",
+       y = 'Number of Drugs') +
+    theme(panel.grid = element_blank()) +
+    ggtitle(paste(
+      'D = ', round(ks_drug$statistic, 2),
+      '; p-value < ', ifelse(ks_drug$p.value < 0.0001,
+                             '0.0001',
+                             round(ks_drug$p.value, 3))
+    ))
+
+concordance_node <- concordance %>%
+    group_by(node1) %>%
+    summarise(kappa = (mean(con) - .5)/.5,
+              up = mean((upstream_coef)))
+
+ks_node <- ks.test(concordance_node$kappa,
+                   rnorm,
+                   alternative = 'greater')
+
+p2 <- concordance_node %>%
+    ggplot(aes(x = kappa)) +
+    geom_histogram(bins = 20) +
+    geom_vline(xintercept = c(0, .5), lty = 2, color = 'red') +
+    labs(x = "Concordance (Cohen's k)",
+       y = 'Number of Nodes') +
+    theme(panel.grid = element_blank()) +
+    ggtitle(paste(
+        'D = ', round(ks_node$statistic, 2),
+        '; p-value < ', ifelse(ks_node$p.value < 0.0001,
+                               '0.0001',
+                               round(ks_node$p.value, 3))
+      ))
+
+ct <- cor.test(concordance_node$kappa,
+               concordance_node$up,
+               method = 'spearman')
+
+p3 <- concordance_node %>%
+  ggplot(aes(x = kappa, y = up)) +
+  geom_point() +
+    labs(x = "Concordance (Cohen's k)",
+         y = 'Perturbation Coefficient') +
+  ggtitle(paste(
+    'r = ', round(ct$estimate, 2),
+    '; p-value = ', ifelse(ct$p.value < 0.0001, '0.001', round(ct$p.value, 3))
+  )) +
+  theme(panel.grid = element_blank())
+
+plot_grid(p1, p2, p3,
+          labels = 'AUTO',
+          label_fontface = 'plain',
+          nrow = 1,
+          scale = .9) %>%
+    ggsave(plot = .,
+           filename = 'output/manuscript/figures/concordance.png',
+           height = 3.5, width = 10)
+```
+
+```{r}
+df %>%
+    group_by(node1) %>%
+    summarise(ave = mean(con)) %>%
+  write_csv('data/true_labels.csv')
+```
+
+```{r coherence}
+coherence <- read_csv('data/coherence.csv') %>%
+  group_by(path, drug) %>%
+  summarise(coh = mean(coherence),
+            upstream_coeff = mean(node1_perturb))
+
+coherence_drug <- coherence %>%
+  group_by(drug) %>%
+  summarise(kappa = (mean(coh) - .5)/.5,
+            up = mean(upstream_coeff))
+
+ks_drug <- ks.test(coherence_drug$kappa,
+                   rnorm,
+                   alternative = 'greater')
+
+p1 <- coherence_drug %>%
+    ggplot(aes(x = kappa)) +
+    geom_histogram() +
+    geom_vline(xintercept = c(0, .5), lty = 2, color = 'red') +
+    labs(x = "Coherence (Cohen's k)",
+       y = 'Number of Drugs') +
+    theme(panel.grid = element_blank()) +
+    ggtitle(paste(
+      'D = ', round(ks_drug$statistic, 2),
+      '; p-value < ', ifelse(ks_drug$p.value < 0.0001,
+                             '0.0001',
+                             round(ks_drug$p.value, 3))
+    ))
+
+coherence_path <- coherence %>%
+    group_by(path) %>%
+    summarise(kappa = (mean(coh) - .5)/.5,
+              up = mean((upstream_coeff)))
+
+ks_path <- ks.test(coherence_path$kappa,
+                   rnorm,
+                   alternative = 'greater')
+
+p2 <- coherence_path %>%
+    ggplot(aes(x = kappa)) +
+    geom_histogram(bins = 20) +
+    geom_vline(xintercept = c(0, .5), lty = 2, color = 'red') +
+    labs(x = "Coherence (Cohen's k)",
+       y = 'Number of Paths') +
+    theme(panel.grid = element_blank()) +
+    ggtitle(paste(
+        'D = ', round(ks_path$statistic, 2),
+        '; p-value < ', ifelse(ks_path$p.value < 0.0001,
+                               '0.0001',
+                               round(ks_path$p.value, 3))
+      ))
+
+ct <- cor.test(coherence_path$kappa,
+               coherence_path$up,
+               method = 'spearman')
+
+p3 <- coherence_path %>%
+  ggplot(aes(x = kappa, y = up)) +
+  geom_point() +
+    labs(x = "Coherence (Cohen's k)",
+         y = 'Perturbation Coefficient') +
+  ggtitle(paste(
+    'r = ', round(ct$estimate, 2),
+    '; p-value = ', ifelse(ct$p.value < 0.0001, '0.001', round(ct$p.value, 3))
+  )) +
+  theme(panel.grid = element_blank())
+
+plot_grid(p1, p2, p3,
+          labels = 'AUTO',
+          label_fontface = 'plain',
+          nrow = 1,
+          scale = .9) %>%
+    ggsave(plot = .,
+           filename = 'output/manuscript/figures/coherence.png',
+           height = 3.5, width = 10)
+```
+
+```{r top_paths}
+n <- 5
+p1 <- coherence %>%
+  group_by(path) %>%
+  summarise(ave = mean(coh)) %>%
+  top_n(n, ave) %>%
+  mutate(path = fct_reorder(as.factor(path), ave)) %>%
+  ggplot(aes(x = path, y = ave)) +
+  geom_col() +
+  labs(x = 'Path', y = 'Coherence') +
+  theme(panel.grid = element_blank())
+
+# p2 <- coherence %>%
+#   select(-drug) %>%
+#   group_by(node1, node2, consensus) %>%
+#   summarise_all(mean) %>%
+#   unique() %>%
+#   as_tbl_graph() %>%
+#   ggraph(layout = 'kk') +
+#   geom_edge_link(aes(color = as.factor(consensus), width = coherence/2),
+#                  end_cap = circle(3, 'mm'),
+#                  start_cap = circle(3, 'mm'),
+#                  alpha = .5,
+#                  arrow = arrow(length = unit(3, 'mm'))) +
+#   geom_node_text(aes(label = name), size = 3) +
+#   theme_void() +
+#   theme(legend.position = 'none',
+#         plot.margin = unit(c(5,5,5,5), 'mm'))
+
+# plot_grid(p2, p3,
+#           labels = 'AUTO',
+#           label_fontface = 'plain',
+#           nrow = 1,
+#           scale = .9) %>%
+#     ggsave(plot = .,
+#            filename = 'output/manuscript/figures/top_paths.png',
+#            height = 3.5, width = 7)
+```
