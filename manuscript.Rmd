@@ -74,17 +74,17 @@ ta <- columnAnnotation(FC = anno_boxplot(mat,
                                          gp = gpar(fill = 'darkgray')),
                        height = unit(2, "cm"))
 
-png(filename = 'output/manuscript/figures/knockdown_matrix.png',
-    height = 7, width = 7, units = 'in', res = 300)
-Heatmap(mat,
-        row_split = groups$type[match(rownames(mat), groups$gene)],
-        column_split = groups$type[match(colnames(mat), groups$gene)],
-        name = 'FC',
-        left_annotation = ra,
-        top_annotation = ta,
-        show_column_dend = FALSE,
-        show_row_dend = FALSE) 
-dev.off()
+# png(filename = 'manuscript/figures/knockdown_matrix.png',
+#     height = 7, width = 7, units = 'in', res = 300)
+# Heatmap(mat,
+#         row_split = groups$type[match(rownames(mat), groups$gene)],
+#         column_split = groups$type[match(colnames(mat), groups$gene)],
+#         name = 'FC',
+#         left_annotation = ra,
+#         top_annotation = ta,
+#         show_column_dend = FALSE,
+#         show_row_dend = FALSE) 
+# dev.off()
 ```
 
 ```{r fold_change}
@@ -104,7 +104,7 @@ df <- diff_expr %>%
         axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5),
         strip.background = element_blank())) %>%
   ggsave(plot = .,
-         filename = 'output/manuscript/figures/fold_change.png',
+         filename = 'manuscript/figures/fold_change.png',
          height = 5, width = 6)
 ```
 
@@ -181,7 +181,7 @@ plot_grid(net,
           labels = 'AUTO',
           label_fontface = 'plain') %>%
   ggsave(plot = .,
-         filename = 'output/manuscript/figures/networks.png',
+         filename = 'manuscript/figures/networks.png',
          width = 10, height = 5)
 ```
 
@@ -193,6 +193,18 @@ npa <- cbind(coeff = coefficients(npa_metastasis),
     rownames_to_column('drug') %>%
   as_tibble()
 
+fls <- list.files('data/npa_metastasis/', full.names = TRUE)
+names(fls) <- str_split(fls, '/|\\.', simplify = TRUE)[,4]
+
+npa_all <- map_df(fls, function(x) {
+  npa_metastasis <- read_rds(x)
+  cbind(coeff = coefficients(npa_metastasis),
+      conf.int(npa_metastasis)) %>%
+    as.data.frame() %>%
+    rownames_to_column('drug') %>%
+    as_tibble()
+}, .id = 'cell')
+
 (npa %>%
     mutate(drug = fct_reorder(drug, coeff)) %>%
     top_n(5, coeff) %>%
@@ -203,7 +215,7 @@ npa <- cbind(coeff = coefficients(npa_metastasis),
           panel.grid = element_blank()) +
     labs(x = '', y = 'NPA')) -> npa_plot
     # ggsave(plot = .,
-    #        filename = 'output/manuscript/figures/npa.png',
+    #        filename = 'manuscript/figures/npa.png',
     #        width = 4, height = 4)
 ```
 
@@ -244,8 +256,23 @@ nodes <- left_join(df1, df2) %>%
   lims(y = c(-.1, .2)) +
   theme(panel.grid = element_blank(), 
         strip.background = element_blank(),
-        axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust =.3),
         axis.title.x = element_text(size = 0)) 
+
+npa_all_mat <- acast(npa_all, drug ~ cell, value.var = 'coeff')
+corr2 <- cor(npa_all_mat,
+             npa_all_mat[, 'MCF7'],
+             use = 'pairwise.complete.obs')
+cells_npa <- tibble(cell = rownames(corr2),
+       pearsons = corr2[, 1]) %>%
+  na.omit() %>%
+  filter(cell != 'MCF7') %>%
+  ggplot(aes(x = pearsons)) +
+  geom_histogram() +
+  geom_vline(xintercept = 0, lty = 2, color = 'red') +
+  theme(panel.grid = element_blank()) +
+  labs(x = "Pearson's Correlation", y = 'Number of Cell Lines')
+
 hms2 <- read_csv('data/dataset_20269_20210412114601.csv')
 
 grmax <- hms2 %>%
@@ -264,14 +291,37 @@ grmax <- hms2 %>%
         axis.title.x = element_text(size = 0)) +
   labs(x= '', y = 'GRmax')
 
-plot_grid(grmax, nodes, 
+hms_mat <- hms2 %>%
+  select(drug = `Small Molecule Name`,
+         cell = `Cell Name`,
+         GRmax) %>%
+  acast(drug ~ cell, value.var = 'GRmax', fun.aggregate = mean)
+
+corr <- cor(hms_mat, hms_mat[, 'MCF7'],
+            use = 'pairwise.complete.obs')
+
+cells_grmax <- tibble(cell = rownames(corr),
+       pearsons = corr[, 1]) %>%
+  na.omit() %>%
+  filter(cell != 'MCF7') %>%
+  ggplot(aes(x = pearsons)) +
+  geom_histogram() +
+  lims(x = c(0, 1)) +
+  geom_vline(xintercept = .5, lty = 2, color = 'red') +
+  theme(panel.grid = element_blank()) +
+  scale_y_continuous(breaks = c(0, 3, 6, 9, 12)) +
+  labs(x = "Pearson's Correlation", y = 'Number of Cell Lines')
+
+plot_grid(grmax, cells_grmax,
+          nodes, cells_npa, 
           labels = 'AUTO',
           label_fontface = 'plain',
-          ncol = 1,
+          rel_widths = c(2, 1),
+          ncol = 2,
           scale = .95) %>%
     ggsave(plot = .,
-           filename = 'output/manuscript/figures/nodes.png',
-           height = 7, width = 7)
+           filename = 'manuscript/figures/nodes.png',
+           height = 6, width = 9)
 ```
 
 ```{r drugs}
@@ -282,7 +332,7 @@ compound_info %>%
   select(cmap_name, moa, target) %>%
   group_by(moa) %>%
   summarise_all(function(x) paste(unique(x), collapse = ', ')) %>%
-  write_csv('output/manuscript/drugs.csv')
+  write_csv('manuscript/drugs.csv')
 ```
 
 ```{r concordance}
@@ -349,21 +399,40 @@ p3 <- concordance_node %>%
   )) +
   theme(panel.grid = element_blank())
 
-plot_grid(p1, p2, p3,
+concordance_all <- read_rds('data/concordance_all.rds')
+
+concordance_cell <- concordance_all %>%
+    group_by(cell) %>%
+    summarise(kappa = (mean(con) - .5)/.5,
+              up = mean((upstream_coef)))
+
+ks_cell <- ks.test(concordance_cell$kappa,
+                   rnorm,
+                   alternative = 'greater')
+
+p4 <- concordance_cell %>%
+    ggplot(aes(x = kappa)) +
+    geom_histogram() +
+    geom_vline(xintercept = c(0, .5), lty = 2, color = 'red') +
+    labs(x = "Concordance (Cohen's k)",
+       y = 'Number of Cell Lines') +
+    scale_y_continuous(breaks = seq(0, 10, 2)) +
+    theme(panel.grid = element_blank()) +
+    ggtitle(paste(
+      'D = ', round(ks_cell$statistic, 2),
+      '; p-value < ', ifelse(ks_cell$p.value < 0.0001,
+                             '0.0001',
+                             round(ks_cell$p.value, 3))
+    ))
+
+plot_grid(p1, p2, p4,
           labels = 'AUTO',
           label_fontface = 'plain',
           nrow = 1,
           scale = .9) %>%
     ggsave(plot = .,
-           filename = 'output/manuscript/figures/concordance.png',
+           filename = 'manuscript/figures/concordance.png',
            height = 3.5, width = 10)
-```
-
-```{r}
-df %>%
-    group_by(node1) %>%
-    summarise(ave = mean(con)) %>%
-  write_csv('data/true_labels.csv')
 ```
 
 ```{r coherence}
@@ -387,6 +456,7 @@ p1 <- coherence_drug %>%
     geom_vline(xintercept = c(0, .5), lty = 2, color = 'red') +
     labs(x = "Coherence (Cohen's k)",
        y = 'Number of Drugs') +
+    scale_y_continuous(breaks = seq(0, 8, 2)) +
     theme(panel.grid = element_blank()) +
     ggtitle(paste(
       'D = ', round(ks_drug$statistic, 2),
@@ -433,13 +503,41 @@ p3 <- coherence_path %>%
   )) +
   theme(panel.grid = element_blank())
 
-plot_grid(p1, p2, p3,
+coherence_all <- read_csv('data/coherence_all.csv') %>%
+  group_by(path, drug, cell) %>%
+  summarise(coh = mean(coherence),
+            upstream_coeff = mean(node1_perturb))
+
+coherence_cell <- coherence_all %>%
+  group_by(cell) %>%
+  summarise(kappa = (mean(coh) - .5)/.5,
+            up = mean(upstream_coeff))
+
+ks_cell <- ks.test(coherence_cell$kappa,
+                   rnorm,
+                   alternative = 'greater')
+
+p4 <- coherence_cell %>%
+    ggplot(aes(x = kappa)) +
+    geom_histogram() +
+    geom_vline(xintercept = c(0, .5), lty = 2, color = 'red') +
+    labs(x = "Coherence (Cohen's k)",
+       y = 'Number of Cell Lines') +
+    theme(panel.grid = element_blank()) +
+    ggtitle(paste(
+      'D = ', round(ks_cell$statistic, 2),
+      '; p-value < ', ifelse(ks_cell$p.value < 0.0001,
+                             '0.0001',
+                             round(ks_cell$p.value, 3))
+    ))
+
+plot_grid(p1, p2, p4,
           labels = 'AUTO',
           label_fontface = 'plain',
           nrow = 1,
           scale = .9) %>%
     ggsave(plot = .,
-           filename = 'output/manuscript/figures/coherence.png',
+           filename = 'manuscript/figures/coherence.png',
            height = 3.5, width = 10)
 ```
 
@@ -478,6 +576,212 @@ p1 <- coherence %>%
 #           nrow = 1,
 #           scale = .9) %>%
 #     ggsave(plot = .,
-#            filename = 'output/manuscript/figures/top_paths.png',
+#            filename = 'manuscript/figures/top_paths.png',
 #            height = 3.5, width = 7)
+```
+
+```{r validataion}
+# drug grmax
+grmax <- hms2 %>%
+  filter(`Cell Name` == 'MCF7') %>%
+  mutate(drug = tolower(`Small Molecule Name`),
+         grmax = GRmax) %>%
+  filter(drug %in% npa$drug) %>%
+  group_by(drug) %>%
+  summarise(grmax = min(grmax))
+
+# drug concordance
+concordance_drug <- filter(coherence_drug, drug %in% grmax$drug)
+coherence_drug <- filter(coherence_drug, drug %in% grmax$drug)
+
+# drug coherence
+coherence_drug
+#
+npa <- filter(npa, drug %in% grmax$drug)
+
+# select nodes
+ind <- c('PEBP1', 'SNAI1', 'RELA', 'ESR1', 'NME1')
+main_mat <- left_join(df1, df2) %>%
+  select(node, drug, coeff) %>%
+  filter(node %in% ind,
+         drug %in% grmax$drug) %>%
+  unique() %>%
+  acast(node ~ drug, value.var = 'coeff')
+group <- ifelse(main_mat['PEBP1',] > 0, 'Activator', 'Repressor')
+
+# drug npa coeffs
+ca_npa <- columnAnnotation(
+  NPA = anno_barplot(npa$coeff[match(npa$drug, colnames(main_mat))], height = unit(2, 'cm')),
+  GRmax = anno_barplot(grmax$grmax[match(grmax$drug, colnames(main_mat))], height = unit(2, 'cm')),
+  Coherence = anno_barplot(coherence_drug$kappa[match(coherence_drug$drug, colnames(main_mat))], height = unit(2, 'cm')),
+  Concordance = anno_barplot(concordance_drug$kappa[match(concordance_drug$drug, colnames(main_mat))], height = unit(2, 'cm')))
+
+png(filename = 'manuscript/figures/drug_profiles.png',
+    height = 18, width = 18, units = 'cm', res = 300)
+Heatmap(main_mat,
+        top_annotation = ca_npa,
+        show_heatmap_legend = FALSE,
+        column_split = group)
+dev.off()
+```
+
+```{r all_drugs}
+# load libraries
+library(tidyverse)
+library(pcr)
+library(cowplot)
+library(ggbreak)
+
+# load data
+all_drugs <- readxl::read_excel('data/ct_values.xlsx', 'alldrugs')
+pathways <- readxl::read_excel('data/ct_values.xlsx', 'pathways')
+
+drug_groups <- select(all_drugs, type = Group, group = Treatment) %>%
+  unique() %>%
+  mutate(type = factor(type, levels = c('Control', 'Activator', 'Repressor')))
+
+# all drugs
+all_drugs <- all_drugs %>%
+  # filter(`Type of assay` == 1) %>%
+  filter(`Date of running` == '2021-11-24 UTC') %>%
+  na.omit()
+ct1 <- select(all_drugs, GAPDH, PEBP1)
+
+group <- pull(all_drugs, Treatment)
+group <- relevel(factor(group), ref = 'DMSO')
+
+res1 <- pcr_analyze(ct1,
+                    group_var = group,
+                    reference_gene = 'GAPDH',
+                    reference_group = 'DMSO')
+
+res1_test <- map_df(levels(group)[-1], ~{
+  com <- c('DMSO', .x)
+  ct <- filter(ct1, group %in% com)
+  g <- factor(group[group %in% com], levels = com)
+  
+  pcr_test(ct,
+           group_var = g,
+           reference_gene = 'GAPDH',
+           reference_group = 'DMSO') %>%
+    mutate(group = .x)
+}) %>%
+  select(group, p_value)
+
+# pcr_test(ct1,
+#             group_var = group,
+#             reference_gene = 'GAPDH',
+#             reference_group = 'DMSO',
+#          test = 'lm')
+
+(res1 %>%
+  left_join(drug_groups) %>%
+  left_join(res1_test) %>%
+  mutate(sig = ifelse(p_value < .05, '*', '')) %>%
+  ggplot(aes(x = group, y = relative_expression,
+             ymin = lower, ymax = upper)) +
+  geom_col() +
+  geom_errorbar(width = .3) +
+  geom_text(aes(y = upper + .1, label = sig)) +
+  facet_grid(~type, scales = 'free_x', space = 'free') +
+  labs(x = '', y = 'Relative PEBP1 mRNA') +
+  # lims(y = c(0, 2.6)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .3),
+        panel.spacing = unit(1, 'mm'),
+        panel.grid = element_blank(),
+        strip.background = element_blank(),
+        axis.title.x = element_text(size = 0))) %>%
+  ggsave(plot = .,
+         filename = 'all_drugs.png',
+         width = 3, height = 3)
+
+# pathways
+res2 <- pathways %>%
+  filter(`Type of assay` == 2,
+         Experiment != 7) %>%
+  na.omit() %>%
+  group_split(Experiment) %>%
+  map(~{
+    group <- .x$Treatment
+    group <- relevel(factor(group), ref = 'DMSO')
+    ct <- select(.x, GAPDH, PEBP1, NME1, ESR1, RELA, SNAI1)
+    
+    pcr_analyze(ct,
+                group_var = group,
+                reference_group = 'DMSO',
+                reference_gene = 'GAPDH') %>%
+      as_tibble()
+  })
+
+res2_test <- pathways %>%
+  filter(`Type of assay` == 2,
+         Experiment != 7) %>%
+  na.omit() %>%
+  group_split(Experiment) %>%
+  map_df(~{
+    group <- .x$Treatment
+    group <- relevel(factor(group), ref = 'DMSO')
+    ct <- select(.x, GAPDH, PEBP1, NME1, ESR1, RELA, SNAI1)
+    
+    pcr_test(ct,
+                group_var = group,
+                reference_group = 'DMSO',
+                reference_gene = 'GAPDH') %>%
+      as_tibble() %>%
+      mutate(group = unique(.x$Treatment)[-1])
+  }) %>%
+  select(group, gene, p_value) %>%
+  unique()
+
+pathways_plots <- res2 %>%
+  map(~{
+    filter(.x, group != 'DMSO') %>%
+      left_join(res2_test) %>%
+      mutate(sig = ifelse(p_value < .05, '*', ''),
+             gene = factor(gene, levels = c('RELA', 'SNAI1', 'PEBP1', 'NME1', 'ESR1'))) %>%
+      ggplot(aes(x = gene, y = relative_expression,
+                 ymin = lower, ymax = upper)) +
+        geom_col(width = .8) +
+        geom_errorbar(width = .3) +
+        geom_hline(yintercept = 1, lty = 2, color = 'red') +
+        geom_text(aes(y = upper + .1, label = sig)) +
+        labs(x = '', y = 'Relative Expression') +
+        facet_grid(~group) +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .3),
+              panel.grid = element_blank(),
+              axis.title.x = element_text(size = 0),
+              strip.background = element_blank())
+  })
+
+(pathways_plots[[1]] +
+  scale_y_break(c(7.5, 30)) +
+  scale_y_continuous(breaks = c(0, 1, 3, 6,30, 32), limits = c(-.2, 34))) %>%
+  ggsave(plot = ., 
+         filename = 'epirubicin.png',
+         width = 3, height = 3)
+
+ggsave(plot = pathways_plots[[2]], 
+       filename = 'vorinostat.png',
+       width = 3, height = 3)
+
+(pathways_plots[[3]] +
+  scale_y_break(c(1.5,3.5)) +
+  scale_y_continuous(breaks = c(0, .5, 1, 4, 5), limits = c(-.1,5.2))) %>%
+  ggsave(plot = ., 
+         filename = 'sorafenib.png',
+         width = 3, height = 3)
+
+(pathways_plots[[4]] + 
+  scale_y_break(c(2.9, 7)) +
+  scale_y_continuous(breaks = c(0, 1, 2, 7, 8), limits = c(-.1, 8.2))) %>%
+  ggsave(plot = ., 
+         filename = 'cisplatin.png',
+         width = 3, height = 3)
+pathways_plots[[4]]
+
+(pathways_plots[[5]]) %>%
+  ggsave(plot = ., 
+         filename = 'imatinib.png',
+         width = 3, height = 3)
+
 ```

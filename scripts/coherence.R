@@ -63,3 +63,37 @@ coherence <- left_join(paths2, select(string_interactions, node1, node2, consens
     })
 
 write_csv(coherence, 'data/coherence.csv')
+
+# there cells
+fls <- list.files('data/npa_metastasis', full.names = TRUE)
+names(fls) <- str_split(fls, '/|\\.', simplify = TRUE)[, 3]
+
+map_df(fls, function(x) {
+    npa_metastasis <- read_rds(x)
+    
+    coeffs <- coefficients(npa_metastasis, type = 'nodes') %>%
+        melt() %>%
+        setNames(c('node', 'drug', 'coeff'))
+    
+    coherence <- left_join(paths2, select(string_interactions, node1, node2, consensus)) %>%
+        left_join(coeffs, by = c('node1'='node')) %>%
+        left_join(coeffs, by = c('node2'='node', 'drug' = 'drug')) %>%
+        mutate(node1_perturb = coeff.x, node2_perturb = coeff.y) %>%
+        mutate_at(vars(starts_with('coeff')), function(x) ifelse(x > 0, 1, -1)) %>%
+        group_split(path, drug) %>%
+        map_df(function(x) {
+            v <- c(x$coeff.y[1], x$consensus)
+            r <- vector()
+            i <- 1
+            while (i < length(v)) {
+                r[i] <- v[i] * v[i+1]
+                i <- i +1
+            }
+            x$observed <- r
+            x$coherence <- as.numeric(x$coeff.y == x$observed)
+            x
+        })
+    
+    coherence
+}, .id = 'cell') %>%
+    write_csv('data/coherence_all.csv')

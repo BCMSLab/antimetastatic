@@ -48,3 +48,32 @@ all(rownames(trt_cp) == id_symbol$ENTREZID)
 rownames(trt_cp) <- id_symbol$SYMBOL
 
 write_rds(trt_cp, 'data/lincs_trt_cp.rds')
+
+# other cell lines
+dir.create('data/lincs_cells')
+
+cells <- unique(md$cell_id)
+map(cells, function(x) {
+  col.ix <- which(md$cell_id == x & md$pert_iname %in% tolower(trt))
+  col.ix2 <- which(md$cell_id == x & md$pert_type == 'ctl_vehicle' & md$pert_iname == 'DMSO')
+  
+  if (length(col.ix) > 5) {
+    # to be removed later
+    set.seed(123)
+    if (length(col.ix2) > 100) {
+      col.ix2 <- sample(col.ix2, 100)
+    }
+    
+    # trt_cp <- readGCTX(sl[, col.ix])
+    trt_cp <- as(sl[, c(col.ix, col.ix2)], "SummarizedExperiment")
+    
+    id_symbol <- select(org.Hs.eg.db,
+                        rownames(trt_cp),
+                        'SYMBOL',
+                        'ENTREZID')
+    all(rownames(trt_cp) == id_symbol$ENTREZID)
+    rownames(trt_cp) <- id_symbol$SYMBOL
+    
+    write_rds(trt_cp, paste0('data/lincs_cells/', x, '.rds'))
+  }
+})
